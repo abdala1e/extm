@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
+const { URL } = require('url'); // استيراد URL من Node.js لضمان التوافق
 
-// نفس المتغيرات والثوابت من الكود الأصلي
+// نفس المتغيرات والثوابت من الكود الأصلي الذي أرسلته
 const USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "VLC/3.0.20 LibVLC/3.0.20",
@@ -13,6 +14,7 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
     'Access-Control-Allow-Headers': 'Range, User-Agent, X-Requested-With, Content-Type',
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+    'Access-Control-Allow-Credentials': 'true'
 };
 
 function generateRandomPublicIp() {
@@ -27,7 +29,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // الدالة الرئيسية التي تعمل على Vercel
 module.exports = async (req, res) => {
-    // req.query.target يأتي من ملف vercel.json
     const targetUrlString = req.query.target;
 
     if (req.method === 'OPTIONS') {
@@ -73,41 +74,40 @@ module.exports = async (req, res) => {
 
         // تمرير ترويسات الاستجابة
         Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
-        
-        // *** هذا هو السطر الذي تم تعديله ***
-        // يخبر المتصفح أن يطلب نسخة جديدة كل 3 ثوانٍ
         res.setHeader('Cache-Control', 'public, s-maxage=3, max-age=3, stale-while-revalidate=3');
 
-        // التعامل مع إعادة التوجيه
+        // التعامل مع إعادة التوجيه (ترجمة حرفية من كود Cloudflare)
         if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get('Location');
             if (location) {
-                // بناء الرابط الجديد ليمر عبر الوكيل
-                const newProxyUrl = `/proxy/${encodeURIComponent(new URL(location, targetUrl).toString())}`;
+                const newUrl = new URL(location, targetUrl).toString();
+                const newProxyUrl = `/api/proxy?target=${encodeURIComponent(newUrl)}`;
                 res.setHeader('Location', newProxyUrl);
                 return res.status(302).end();
             }
         }
 
-        // تعديل روابط M3U8
+        // تعديل روابط M3U8 (ترجمة حرفية من كود Cloudflare)
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('mpegurl')) {
             let body = await response.text();
+            // *** هذا هو التصحيح الحاسم ***
+            // نستخدم `targetUrl` الأصلي كأساس، تمامًا كما في كود Cloudflare
             const baseUrl = new URL(targetUrl.toString());
             const origin = `https://${req.headers.host}`;
 
-            // تعديل الروابط داخل الملف لتمر عبر الوكيل
-            body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
-            body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
+            body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/api/proxy?target=${encodeURIComponent(line)}`);
+            body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/api/proxy?target=${encodeURIComponent(new URL(line, baseUrl).toString())}`);
             
             return res.status(response.status).send(body);
         }
 
-        // تمرير المحتوى مباشرة (مثل مقاطع الفيديو .ts)
+        // تمرير المحتوى مباشرة
         res.status(response.status);
         response.body.pipe(res);
 
     } catch (error) {
+        console.error(error); // إضافة هذا السطر لرؤية الأخطاء في Vercel Logs
         res.status(500).send(`Proxy error: ${error.message}`);
     }
 };
