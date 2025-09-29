@@ -109,10 +109,3 @@ module.exports = async (req, res) => {
         res.status(500).send(`Proxy error: ${error.message}`);
     }
 };
-        response.body.pipe(res);
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).send(`Proxy error: ${error.message}`);
-    }
-};
