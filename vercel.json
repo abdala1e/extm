@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/iraq.m3u8",
-      "destination": "/api/proxy?target=http://cf.cdn-010.me/live/2c2a40a86710/35a4eguve9/1423638.m3u8"
+      "destination": "/api/proxy?target=http://12k-service.com:8080/live/a5n1qj2z7h/z7san35uxz/624321.m3u8"
     },
     {
       "source": "/proxy/:target",
