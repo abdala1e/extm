@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
-const { URL } = require('url'); // استيراد URL من Node.js لضمان التوافق
+const { URL } = require('url');
 
-// نفس المتغيرات والثوابت من الكود الأصلي الذي أرسلته
+// ... (كل الثوابت والدوال الأخرى تبقى كما هي)
 const USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "VLC/3.0.20 LibVLC/3.0.20",
@@ -26,6 +26,7 @@ function generateRandomPublicIp() {
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 
 // الدالة الرئيسية التي تعمل على Vercel
 module.exports = async (req, res) => {
@@ -76,7 +77,7 @@ module.exports = async (req, res) => {
         Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
         res.setHeader('Cache-Control', 'public, s-maxage=3, max-age=3, stale-while-revalidate=3');
 
-        // التعامل مع إعادة التوجيه (ترجمة حرفية من كود Cloudflare)
+        // التعامل مع إعادة التوجيه
         if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get('Location');
             if (location) {
@@ -87,12 +88,14 @@ module.exports = async (req, res) => {
             }
         }
 
-        // تعديل روابط M3U8 (ترجمة حرفية من كود Cloudflare)
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('mpegurl')) {
+            // *** بداية التصحيح الحاسم ***
+            // إضافة "ختم الجودة" لييفهم المشغل أنه ملف بث
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            // *** نهاية التصحيح الحاسم ***
+
             let body = await response.text();
-            // *** هذا هو التصحيح الحاسم ***
-            // نستخدم `targetUrl` الأصلي كأساس، تمامًا كما في كود Cloudflare
             const baseUrl = new URL(targetUrl.toString());
             const origin = `https://${req.headers.host}`;
 
@@ -102,12 +105,14 @@ module.exports = async (req, res) => {
             return res.status(response.status).send(body);
         }
 
-        // تمرير المحتوى مباشرة
+        // تمرير المحتوى مباشرة (مثل مقاطع الفيديو .ts)
+        // هنا أيضًا نمرر الـ Content-Type الأصلي
+        res.setHeader('Content-Type', contentType);
         res.status(response.status);
         response.body.pipe(res);
 
     } catch (error) {
-        console.error(error); // إضافة هذا السطر لرؤية الأخطاء في Vercel Logs
+        console.error(error);
         res.status(500).send(`Proxy error: ${error.message}`);
     }
 };
