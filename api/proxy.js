@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
                 response = await fetch(targetUrl.toString(), {
                     method: req.method,
                     headers: requestHeaders,
-                    redirect: 'manual', // نفس الكود الأصلي
+                    redirect: 'manual',
                     signal: AbortSignal.timeout(8000)
                 });
 
@@ -73,12 +73,16 @@ module.exports = async (req, res) => {
 
         // تمرير ترويسات الاستجابة
         Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
+        
+        // *** هذا هو السطر الذي تم تعديله ***
+        // يخبر المتصفح أن يطلب نسخة جديدة كل 3 ثوانٍ
         res.setHeader('Cache-Control', 'public, s-maxage=3, max-age=3, stale-while-revalidate=3');
 
         // التعامل مع إعادة التوجيه
         if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get('Location');
             if (location) {
+                // بناء الرابط الجديد ليمر عبر الوكيل
                 const newProxyUrl = `/proxy/${encodeURIComponent(new URL(location, targetUrl).toString())}`;
                 res.setHeader('Location', newProxyUrl);
                 return res.status(302).end();
@@ -92,13 +96,14 @@ module.exports = async (req, res) => {
             const baseUrl = new URL(targetUrl.toString());
             const origin = `https://${req.headers.host}`;
 
+            // تعديل الروابط داخل الملف لتمر عبر الوكيل
             body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
             body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
             
             return res.status(response.status).send(body);
         }
 
-        // تمرير المحتوى مباشرة
+        // تمرير المحتوى مباشرة (مثل مقاطع الفيديو .ts)
         res.status(response.status);
         response.body.pipe(res);
 
