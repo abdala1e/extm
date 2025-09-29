@@ -19,14 +19,13 @@ const CORS_HEADERS = {
 
 function generateRandomPublicIp() {
     const firstOctet = Math.floor(Math.random() * 223) + 1;
-    if ([10, 127, 172, 192].includes(firstOctet)) {
+    if (.includes(firstOctet)) {
         return generateRandomPublicIp();
     }
     return `${firstOctet}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 
 // الدالة الرئيسية التي تعمل على Vercel
 module.exports = async (req, res) => {
@@ -73,15 +72,14 @@ module.exports = async (req, res) => {
             return res.status(502).send('Failed to fetch from origin after all retries.');
         }
 
-        // تمرير ترويسات الاستجابة
         Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
         res.setHeader('Cache-Control', 'public, s-maxage=3, max-age=3, stale-while-revalidate=3');
 
-        // التعامل مع إعادة التوجيه
         if (response.status >= 300 && response.status < 400) {
             const location = response.headers.get('Location');
             if (location) {
                 const newUrl = new URL(location, targetUrl).toString();
+                // *** التصحيح الأول: استخدام رابط نسبي لإعادة التوجيه ***
                 const newProxyUrl = `/api/proxy?target=${encodeURIComponent(newUrl)}`;
                 res.setHeader('Location', newProxyUrl);
                 return res.status(302).end();
@@ -90,25 +88,27 @@ module.exports = async (req, res) => {
 
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('mpegurl')) {
-            // *** بداية التصحيح الحاسم ***
-            // إضافة "ختم الجودة" لييفهم المشغل أنه ملف بث
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            // *** نهاية التصحيح الحاسم ***
-
+            
             let body = await response.text();
             const baseUrl = new URL(targetUrl.toString());
-            const origin = `https://${req.headers.host}`;
 
-            body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/api/proxy?target=${encodeURIComponent(line)}`);
-            body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/api/proxy?target=${encodeURIComponent(new URL(line, baseUrl).toString())}`);
+            // *** التصحيح الثاني الحاسم: استخدام روابط نسبية داخل الملف ***
+            body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `/api/proxy?target=${encodeURIComponent(line)}`);
+            body = body.replace(/^([^\s#].*)$/gm, line => `/api/proxy?target=${encodeURIComponent(new URL(line, baseUrl).toString())}`);
             
             return res.status(response.status).send(body);
         }
 
-        // تمرير المحتوى مباشرة (مثل مقاطع الفيديو .ts)
-        // هنا أيضًا نمرر الـ Content-Type الأصلي
         res.setHeader('Content-Type', contentType);
         res.status(response.status);
+        response.body.pipe(res);
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).send(`Proxy error: ${error.message}`);
+    }
+};
         response.body.pipe(res);
 
     } catch (error) {
