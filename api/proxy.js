@@ -27,78 +27,61 @@ module.exports = async (req, res) => {
             const maxRetries = 5;
 
             for (let i = 0; i < maxRetries; i++) {
-                // ... (منطق إعادة المحاولة يبقى كما هو)
+                const url = new URL(currentUrl);
+                const requestHeaders = {};
+                requestHeaders['User-Agent'] = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+                requestHeaders['X-Forwarded-For'] = generateRandomPublicIp();
+                requestHeaders['X-Real-IP'] = requestHeaders['X-Forwarded-For'];
+                requestHeaders['Origin'] = url.origin;
+                requestHeaders['Referer'] = url.origin + '/';
+                requestHeaders['Host'] = url.host;
+
                 try {
-                    response = await fetch(currentUrl, { /* ... إعدادات الطلب ... */ });
+                    response = await fetch(currentUrl, {
+                        method: 'GET',
+                        headers: requestHeaders,
+                        redirect: 'manual',
+                        // *** التعديل الأول: مهلة أسرع ***
+                        signal: AbortSignal.timeout(4000) // كانت 15000
+                    });
+
+                    if (response.status >= 300 && response.status < 400) {
+                        const location = response.headers.get('Location');
+                        if (location) {
+                            currentUrl = new URL(location, currentUrl).toString();
+                            if (i < maxRetries - 1) continue;
+                        }
+                    }
+                    
                     if (response.ok) break;
-                } catch (error) { /* ... */ }
-                if (i < maxRetries - 1) await delay(500 * (i + 1));
+
+                } catch (error) {
+                    console.error(`Attempt ${i + 1} failed: ${error.message}`);
+                }
+                
+                // *** التعديل الثاني: تأخير أقل بين المحاولات ***
+                if (i < maxRetries - 1) await delay(250 * (i + 1)); // كانت 500
             }
 
             if (!response || !response.ok) {
                  return res.status(502).send('Failed to fetch from origin after all retries.');
             }
 
-            const contentType = response.headers.get('content-type') || '';
+            res.setHeader('X-Proxy-Timestamp', Date.now());
 
-            // *** بداية الحل النهائي: "مُعالج قائمة التشغيل" ***
+            const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('mpegurl')) {
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
-                
-                const lines = body.split('\n');
-                const segments = [];
-                let headerLines = [];
-                let mediaSequence = 0;
-
-                // 1. فصل الترويسات عن المقاطع
-                for (const line of lines) {
-                    if (line.startsWith('#EXTINF')) {
-                        const nextLineIndex = lines.indexOf(line) + 1;
-                        if (nextLineIndex < lines.length && lines[nextLineIndex].trim().endsWith('.ts')) {
-                            segments.push({ info: line, path: lines[nextLineIndex] });
-                        }
-                    } else if (line.startsWith('#EXT-X-MEDIA-SEQUENCE')) {
-                        mediaSequence = parseInt(line.split(':')[1], 10) || 0;
-                        headerLines.push(line); // احتفظ بالسطر الأصلي
-                    } else if (line.startsWith('#') && !line.startsWith('#EXT-X-ENDLIST')) {
-                        headerLines.push(line);
-                    }
-                }
-
-                // 2. إزالة التكرار من المقاطع (الاحتفاظ بالنسخة الأخيرة فقط)
-                const uniqueSegments = Array.from(new Map(segments.map(s => [s.path, s])).values());
-
-                // 3. إعادة بناء قائمة التشغيل بشكل نظيف
-                let newPlaylist = [];
-                // إزالة أي ترويسة MEDIA-SEQUENCE قديمة من الترويسات
-                headerLines = headerLines.filter(l => !l.startsWith('#EXT-X-MEDIA-SEQUENCE'));
-                newPlaylist.push(...headerLines);
-
-                // إضافة ترويسة MEDIA-SEQUENCE جديدة وصحيحة
-                if (uniqueSegments.length > 0) {
-                    newPlaylist.push(`#EXT-X-MEDIA-SEQUENCE:${mediaSequence}`);
-                }
-
-                // إضافة المقاطع النظيفة
-                uniqueSegments.forEach(segment => {
-                    newPlaylist.push(segment.info);
-                    newPlaylist.push(segment.path);
-                });
-
-                let finalBody = newPlaylist.join('\n');
-
-                // إعادة كتابة الروابط لتمر عبر البروكسي
                 const baseUrl = new URL(currentUrl);
                 const origin = `https://${req.headers.host}`;
-                finalBody = finalBody.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
-                finalBody = finalBody.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
-                
-                return res.status(response.status).send(finalBody);
-            }
-            // *** نهاية الحل النهائي ***
 
-            // تمرير مقاطع الفيديو .ts مباشرة كما في الكود الناجح
+                body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
+                body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
+                
+                return res.status(response.status).send(body);
+            }
+
             response.headers.forEach((value, name) => {
                 if (!['content-encoding', 'transfer-encoding', 'cache-control', 'pragma', 'expires'].includes(name.toLowerCase())) {
                     res.setHeader(name, value);
