@@ -25,8 +25,7 @@ module.exports = async (req, res) => {
         try {
             let currentUrl = targetUrlString;
             let response;
-            // *** التعديل الأول: زيادة المثابرة ***
-            const maxRetries = 5; // كانت 3
+            const maxRetries = 5;
 
             for (let i = 0; i < maxRetries; i++) {
                 const url = new URL(currentUrl);
@@ -43,8 +42,7 @@ module.exports = async (req, res) => {
                         method: 'GET',
                         headers: requestHeaders,
                         redirect: 'manual',
-                        // *** التعديل الثاني: زيادة الصبر ***
-                        signal: AbortSignal.timeout(15000) // كانت 8000
+                        signal: AbortSignal.timeout(15000)
                     });
 
                     if (response.status >= 300 && response.status < 400) {
@@ -55,14 +53,12 @@ module.exports = async (req, res) => {
                         }
                     }
                     
-                    if (response.ok) break; // إذا كان الاتصال ناجحًا، اخرج من الحلقة
+                    if (response.ok) break;
 
                 } catch (error) {
-                    // لا تفعل شيئًا هنا، فقط دع الحلقة تستمر للمحاولة التالية
                     console.error(`Attempt ${i + 1} failed: ${error.message}`);
                 }
                 
-                // انتظر قليلاً قبل المحاولة التالية
                 await delay(500 * (i + 1));
             }
 
@@ -70,7 +66,10 @@ module.exports = async (req, res) => {
                  return res.status(502).send('Failed to fetch from origin after all retries.');
             }
 
-            res.setHeader('Cache-Control', 'public, s-maxage=3, max-age=3, stale-while-revalidate=3');
+            // *** بداية التعديل الحاسم ***
+            // هذا السطر يمنع أي تخزين مؤقت على الإطلاق
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            // *** نهاية التعديل الحاسم ***
 
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('mpegurl')) {
