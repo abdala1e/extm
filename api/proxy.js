@@ -16,6 +16,7 @@ module.exports = async (req, res) => {
         const streamURLviaProxy = `${origin}/proxy/${encodeURIComponent(streamUrl)}`;
         const masterPlaylist = `#EXTM3U\n#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=5000000,RESOLUTION=1920x1080,NAME="FHD"\n${streamURLviaProxy}`;
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        // لا نضع أي ترويسة Cache-Control هنا
         return res.status(200).send(masterPlaylist);
     }
 
@@ -27,11 +28,37 @@ module.exports = async (req, res) => {
             const maxRetries = 5;
 
             for (let i = 0; i < maxRetries; i++) {
-                // ... (منطق إعادة المحاولة يبقى كما هو)
+                const url = new URL(currentUrl);
+                const requestHeaders = {};
+                requestHeaders['User-Agent'] = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+                requestHeaders['X-Forwarded-For'] = generateRandomPublicIp();
+                requestHeaders['X-Real-IP'] = requestHeaders['X-Forwarded-For'];
+                requestHeaders['Origin'] = url.origin;
+                requestHeaders['Referer'] = url.origin + '/';
+                requestHeaders['Host'] = url.host;
+
                 try {
-                    response = await fetch(currentUrl, { /* ... إعدادات الطلب ... */ });
-                    if (response.ok) break;
-                } catch (error) { /* ... */ }
+                    response = await fetch(currentUrl, {
+                        method: 'GET',
+                        headers: requestHeaders,
+                        redirect: 'manual',
+                        signal: AbortSignal.timeout(15000)
+                    });
+
+                    if (response.status >= 300 && response.status < 400) {
+                        const location = response.headers.get('Location');
+                        if (location) {
+                            currentUrl = new URL(location, currentUrl).toString();
+                            if (i < maxRetries - 1) continue; // إذا لم تكن المحاولة الأخيرة، كرر
+                        }
+                    }
+                    
+                    if (response.ok) break; // نجح الاتصال، اخرج
+
+                } catch (error) {
+                    console.error(`Attempt ${i + 1} failed: ${error.message}`);
+                }
+                
                 if (i < maxRetries - 1) await delay(500 * (i + 1));
             }
 
@@ -39,28 +66,34 @@ module.exports = async (req, res) => {
                  return res.status(502).send('Failed to fetch from origin after all retries.');
             }
 
-            const contentType = response.headers.get('content-type') || '';
-            
-            // تمرير الترويسات الأصلية المهمة
-            res.setHeader('Content-Type', contentType);
-            if (response.headers.has('content-length')) {
-                res.setHeader('Content-Length', response.headers.get('content-length'));
-            }
+            // *** بداية التعديل الحاسم ***
+            // 1. إزالة أي ترويسة Cache-Control بشكل كامل
+            // 2. إضافة "ختم الوقت" لتنظيم التدفق
+            res.setHeader('X-Proxy-Timestamp', Date.now());
+            // *** نهاية التعديل الحاسم ***
 
+            const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('mpegurl')) {
+                res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
                 const baseUrl = new URL(currentUrl);
                 const origin = `https://${req.headers.host}`;
+
                 body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
                 body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
+                
                 return res.status(response.status).send(body);
             }
 
-            // *** بداية الحل النهائي: "الناقل المدرع" ***
-            // بدلاً من استخدام .pipe()، نقوم بتجميع البيانات ثم إرسالها دفعة واحدة
-            const dataBuffer = await response.buffer();
-            res.status(response.status).send(dataBuffer);
-            // *** نهاية الحل النهائي ***
+            // تمرير المحتوى مباشرة مع ترويساته الأصلية
+            response.headers.forEach((value, name) => {
+                // لا نمرر ترويسات قد تسبب مشاكل في التخزين أو الترميز
+                if (!['content-encoding', 'transfer-encoding', 'cache-control', 'pragma', 'expires'].includes(name.toLowerCase())) {
+                    res.setHeader(name, value);
+                }
+            });
+            res.status(response.status);
+            response.body.pipe(res);
 
         } catch (error) {
             console.error(error);
