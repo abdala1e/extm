@@ -1,7 +1,6 @@
 const fetch = require('node-fetch');
 const { URL } = require('url');
 
-// ... (الثوابت والدوال المساعدة تبقى كما هي)
 const USER_AGENTS = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36", "VLC/3.0.20 LibVLC/3.0.20", "okhttp/4.9.3", "com.google.android.exoplayer2/2.18.1"];
 const CORS_HEADERS = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Allow-Headers': 'Range, User-Agent, X-Requested-With, Content-Type', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range', 'Access-Control-Allow-Credentials': 'true'};
 function generateRandomPublicIp() { const firstOctet = Math.floor(Math.random() * 223) + 1; if ([10, 127, 172, 192].includes(firstOctet)) { return generateRandomPublicIp(); } return `${firstOctet}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`; }
@@ -17,6 +16,7 @@ module.exports = async (req, res) => {
         const streamURLviaProxy = `${origin}/proxy/${encodeURIComponent(streamUrl)}`;
         const masterPlaylist = `#EXTM3U\n#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=5000000,RESOLUTION=1920x1080,NAME="FHD"\n${streamURLviaProxy}`;
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        // لا نضع أي ترويسة Cache-Control هنا
         return res.status(200).send(masterPlaylist);
     }
 
@@ -49,17 +49,17 @@ module.exports = async (req, res) => {
                         const location = response.headers.get('Location');
                         if (location) {
                             currentUrl = new URL(location, currentUrl).toString();
-                            continue; 
+                            if (i < maxRetries - 1) continue; // إذا لم تكن المحاولة الأخيرة، كرر
                         }
                     }
                     
-                    if (response.ok) break;
+                    if (response.ok) break; // نجح الاتصال، اخرج
 
                 } catch (error) {
                     console.error(`Attempt ${i + 1} failed: ${error.message}`);
                 }
                 
-                await delay(500 * (i + 1));
+                if (i < maxRetries - 1) await delay(500 * (i + 1));
             }
 
             if (!response || !response.ok) {
@@ -67,8 +67,9 @@ module.exports = async (req, res) => {
             }
 
             // *** بداية التعديل الحاسم ***
-            // هذا السطر يمنع أي تخزين مؤقت على الإطلاق
-            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            // 1. إزالة أي ترويسة Cache-Control بشكل كامل
+            // 2. إضافة "ختم الوقت" لتنظيم التدفق
+            res.setHeader('X-Proxy-Timestamp', Date.now());
             // *** نهاية التعديل الحاسم ***
 
             const contentType = response.headers.get('content-type') || '';
@@ -84,8 +85,10 @@ module.exports = async (req, res) => {
                 return res.status(response.status).send(body);
             }
 
+            // تمرير المحتوى مباشرة مع ترويساته الأصلية
             response.headers.forEach((value, name) => {
-                if (!['content-encoding', 'transfer-encoding'].includes(name.toLowerCase())) {
+                // لا نمرر ترويسات قد تسبب مشاكل في التخزين أو الترميز
+                if (!['content-encoding', 'transfer-encoding', 'cache-control', 'pragma', 'expires'].includes(name.toLowerCase())) {
                     res.setHeader(name, value);
                 }
             });
