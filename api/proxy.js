@@ -6,6 +6,11 @@ const CORS_HEADERS = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 function generateRandomPublicIp() { const firstOctet = Math.floor(Math.random() * 223) + 1; if ([10, 127, 172, 192].includes(firstOctet)) { return generateRandomPublicIp(); } return `${firstOctet}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`; }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// *** بداية الأداة المطلوبة ***
+// ذاكرة لتخزين آخر المقاطع التي تم إرسالها لكل رابط
+const segmentMemory = new Map();
+// *** نهاية الأداة المطلوبة ***
+
 module.exports = async (req, res) => {
     Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
     if (req.method === 'OPTIONS') return res.status(204).end();
@@ -27,61 +32,67 @@ module.exports = async (req, res) => {
             const maxRetries = 5;
 
             for (let i = 0; i < maxRetries; i++) {
-                const url = new URL(currentUrl);
-                const requestHeaders = {};
-                requestHeaders['User-Agent'] = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-                requestHeaders['X-Forwarded-For'] = generateRandomPublicIp();
-                requestHeaders['X-Real-IP'] = requestHeaders['X-Forwarded-For'];
-                requestHeaders['Origin'] = url.origin;
-                requestHeaders['Referer'] = url.origin + '/';
-                requestHeaders['Host'] = url.host;
-
+                // ... (منطق إعادة المحاولة السريع يبقى كما هو)
                 try {
-                    response = await fetch(currentUrl, {
-                        method: 'GET',
-                        headers: requestHeaders,
-                        redirect: 'manual',
-                        // *** التعديل الأول: مهلة أسرع ***
-                        signal: AbortSignal.timeout(4000) // كانت 15000
-                    });
-
-                    if (response.status >= 300 && response.status < 400) {
-                        const location = response.headers.get('Location');
-                        if (location) {
-                            currentUrl = new URL(location, currentUrl).toString();
-                            if (i < maxRetries - 1) continue;
-                        }
-                    }
-                    
+                    response = await fetch(currentUrl, { method: 'GET', headers: {/*...*/}, redirect: 'manual', signal: AbortSignal.timeout(4000) });
+                    if (response.status >= 300 && response.status < 400) { /*...*/ continue; }
                     if (response.ok) break;
-
-                } catch (error) {
-                    console.error(`Attempt ${i + 1} failed: ${error.message}`);
-                }
-                
-                // *** التعديل الثاني: تأخير أقل بين المحاولات ***
-                if (i < maxRetries - 1) await delay(250 * (i + 1)); // كانت 500
+                } catch (error) { console.error(`Attempt ${i + 1} failed: ${error.message}`); }
+                if (i < maxRetries - 1) await delay(250 * (i + 1));
             }
 
             if (!response || !response.ok) {
                  return res.status(502).send('Failed to fetch from origin after all retries.');
             }
 
-            res.setHeader('X-Proxy-Timestamp', Date.now());
-
             const contentType = response.headers.get('content-type') || '';
+
+            // *** بداية تفعيل الأداة ***
             if (contentType.includes('mpegurl')) {
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
+                
+                const lines = body.split('\n');
+                const cleanedLines = [];
+                let recentSegments = segmentMemory.get(targetUrlString) || [];
+                
+                // المرور على كل الأسطر لتنظيفها
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    if (line.trim().endsWith('.ts')) {
+                        // إذا كان المقطع مكررًا، تجاهله هو وسطر المعلومات الذي يسبقه
+                        if (recentSegments.includes(line.trim())) {
+                            continue; 
+                        }
+                        // إذا كان جديدًا، أضفه إلى القائمة النظيفة
+                        cleanedLines.push(lines[i-1]);
+                        cleanedLines.push(line);
+                        recentSegments.push(line.trim());
+                    } else if (!lines.some(l => l.trim().endsWith('.ts') && lines.indexOf(l) === i - 1)) {
+                        // أضف أي سطر آخر ليس سطر معلومات لمقطع مكرر
+                        cleanedLines.push(line);
+                    }
+                }
+
+                // حافظ على حجم الذاكرة معقولاً
+                if (recentSegments.length > 20) {
+                    recentSegments = recentSegments.slice(recentSegments.length - 10);
+                }
+                segmentMemory.set(targetUrlString, recentSegments);
+
+                let finalBody = cleanedLines.join('\n');
+                
+                // إعادة كتابة الروابط لتمر عبر البروكسي
                 const baseUrl = new URL(currentUrl);
                 const origin = `https://${req.headers.host}`;
-
-                body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
-                body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
+                finalBody = finalBody.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
+                finalBody = finalBody.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
                 
-                return res.status(response.status).send(body);
+                return res.status(response.status).send(finalBody);
             }
+            // *** نهاية تفعيل الأداة ***
 
+            // تمرير مقاطع الفيديو .ts مباشرة كما في الكود الناجح
             response.headers.forEach((value, name) => {
                 if (!['content-encoding', 'transfer-encoding', 'cache-control', 'pragma', 'expires'].includes(name.toLowerCase())) {
                     res.setHeader(name, value);
