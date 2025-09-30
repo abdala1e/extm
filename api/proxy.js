@@ -1,11 +1,8 @@
 const fetch = require('node-fetch');
 const { URL } = require('url');
 
-// --- بداية العلاج ---
-// متغيرات لتذكر آخر مقطع تم تسليمه ورابط قائمة التشغيل الخاصة به
 let lastDeliveredSegmentUrl = null;
 let lastPlaylistUrl = null;
-// --- نهاية العلاج ---
 
 const USER_AGENTS = ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36", "VLC/3.0.20 LibVLC/3.0.20", "okhttp/4.9.3", "com.google.android.exoplayer2/2.18.1"];
 const CORS_HEADERS = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Allow-Headers': 'Range, User-Agent, X-Requested-With, Content-Type', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range', 'Access-Control-Allow-Credentials': 'true'};
@@ -21,7 +18,7 @@ module.exports = async (req, res) => {
     const playlistUrlFromQuery = urlParams.get('playlist');
 
     if (req.query.isMaster === 'true') {
-        lastDeliveredSegmentUrl = null; // إعادة تعيين الذاكرة عند بدء بث جديد
+        lastDeliveredSegmentUrl = null;
         lastPlaylistUrl = null;
         const streamUrl = 'http://111g1u0paira.maxplayer4k.org:2052/live/17415748956629/27133616434229/194472.m3u8';
         const origin = `https://${req.headers.host}`;
@@ -36,11 +33,11 @@ module.exports = async (req, res) => {
             let currentUrl = targetUrlString;
             const isTsSegment = currentUrl.endsWith('.ts');
 
-            // --- بداية منطق البروكسي الصبور ---
             if (isTsSegment && currentUrl === lastDeliveredSegmentUrl && lastPlaylistUrl) {
-                console.log(`[Patient Proxy] Duplicate segment request: ${currentUrl}. Waiting for a new one...`);
+                console.log(`[Smart Proxy] Duplicate segment request: ${currentUrl}. Waiting for a new one...`);
                 let newSegmentFound = false;
-                for (let attempt = 0; attempt < 20; attempt++) { // انتظر 5 ثوانٍ كحد أقصى
+                // --- التحسين: تقليل مدة الانتظار القصوى إلى 2.5 ثانية ---
+                for (let attempt = 0; attempt < 10; attempt++) { // 10 محاولات * 250 ميلي ثانية = 2.5 ثانية
                     await delay(250);
                     try {
                         const playlistRes = await fetch(lastPlaylistUrl, { signal: AbortSignal.timeout(2000) });
@@ -50,21 +47,20 @@ module.exports = async (req, res) => {
                             if (segments && segments.length > 0) {
                                 const latestSegment = new URL(segments[segments.length - 1], lastPlaylistUrl).toString();
                                 if (latestSegment !== currentUrl) {
-                                    console.log(`[Patient Proxy] New segment found: ${latestSegment}. Proceeding.`);
-                                    currentUrl = latestSegment; // تحديث الرابط إلى المقطع الجديد
+                                    console.log(`[Smart Proxy] New segment found: ${latestSegment}. Proceeding.`);
+                                    currentUrl = latestSegment;
                                     newSegmentFound = true;
                                     break;
                                 }
                             }
                         }
-                    } catch (e) { console.error(`[Patient Proxy] Error fetching playlist: ${e.message}`); }
+                    } catch (e) { console.error(`[Smart Proxy] Error fetching playlist: ${e.message}`); }
                 }
                 if (!newSegmentFound) {
-                    console.error(`[Patient Proxy] Timed out waiting for new segment. Failing request.`);
+                    console.error(`[Smart Proxy] Timed out waiting for new segment. Failing request.`);
                     return res.status(504).send('Gateway Timeout: Could not find a new segment from origin.');
                 }
             }
-            // --- نهاية منطق البروكسي الصبور ---
 
             let response;
             const maxRetries = 5;
@@ -85,12 +81,12 @@ module.exports = async (req, res) => {
 
             if (!response || !response.ok) { return res.status(502).send('Failed to fetch from origin after all retries.'); }
 
-            if (isTsSegment) { lastDeliveredSegmentUrl = currentUrl; } // تحديث الذاكرة بعد النجاح
+            if (isTsSegment) { lastDeliveredSegmentUrl = currentUrl; }
 
             res.setHeader('Cache-Control', 'no-cache');
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('mpegurl')) {
-                lastPlaylistUrl = currentUrl; // حفظ رابط قائمة التشغيل الحالية
+                lastPlaylistUrl = currentUrl;
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
                 const baseUrl = new URL(currentUrl);
