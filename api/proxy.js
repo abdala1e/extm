@@ -27,45 +27,68 @@ module.exports = async (req, res) => {
             const maxRetries = 5;
 
             for (let i = 0; i < maxRetries; i++) {
-                // ... (منطق إعادة المحاولة السريع يبقى كما هو)
+                const url = new URL(currentUrl);
+                const requestHeaders = {};
+                requestHeaders['User-Agent'] = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+                requestHeaders['X-Forwarded-For'] = generateRandomPublicIp();
+                requestHeaders['X-Real-IP'] = requestHeaders['X-Forwarded-For'];
+                requestHeaders['Origin'] = url.origin;
+                requestHeaders['Referer'] = url.origin + '/';
+                requestHeaders['Host'] = url.host;
+
                 try {
-                    response = await fetch(currentUrl, { method: 'GET', headers: {/*...*/}, redirect: 'manual', signal: AbortSignal.timeout(4000) });
-                    if (response.status >= 300 && response.status < 400) { /*...*/ continue; }
+                    response = await fetch(currentUrl, {
+                        method: 'GET',
+                        headers: requestHeaders,
+                        redirect: 'manual',
+                        // *** التعديل الأول: مهلة أسرع ***
+                        signal: AbortSignal.timeout(4000) // كانت 15000
+                    });
+
+                    if (response.status >= 300 && response.status < 400) {
+                        const location = response.headers.get('Location');
+                        if (location) {
+                            currentUrl = new URL(location, currentUrl).toString();
+                            if (i < maxRetries - 1) continue;
+                        }
+                    }
+                    
                     if (response.ok) break;
-                } catch (error) { console.error(`Attempt ${i + 1} failed: ${error.message}`); }
-                if (i < maxRetries - 1) await delay(250 * (i + 1));
+
+                } catch (error) {
+                    console.error(`Attempt ${i + 1} failed: ${error.message}`);
+                }
+                
+                // *** التعديل الثاني: تأخير أقل بين المحاولات ***
+                if (i < maxRetries - 1) await delay(250 * (i + 1)); // كانت 500
             }
 
             if (!response || !response.ok) {
                  return res.status(502).send('Failed to fetch from origin after all retries.');
             }
 
-            const contentType = response.headers.get('content-type') || '';
+            res.setHeader('X-Proxy-Timestamp', Date.now());
 
+            const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('mpegurl')) {
-                // قائمة التشغيل .m3u8 يتم التعامل معها كنص عادي
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
                 const baseUrl = new URL(currentUrl);
                 const origin = `https://${req.headers.host}`;
+
                 body = body.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
                 body = body.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
+                
                 return res.status(response.status).send(body);
             }
 
-            // *** بداية الحل القاتل للمشكلة: "الناقل المدرع v2" ***
-            // هذا الجزء مخصص فقط لمقاطع الفيديو .ts والملفات الثنائية الأخرى
-            
-            // 1. تحميل المقطع بالكامل في الذاكرة
-            const dataBuffer = await response.buffer();
-            
-            // 2. ضبط الترويسات بدقة متناهية
-            res.setHeader('Content-Type', contentType);
-            res.setHeader('Content-Length', dataBuffer.length); // إخبار ffmpeg بالحجم الدقيق
-            
-            // 3. إرسال المقطع دفعة واحدة
-            return res.status(response.status).send(dataBuffer);
-            // *** نهاية الحل القاتل للمشكلة ***
+            response.headers.forEach((value, name) => {
+                if (!['content-encoding', 'transfer-encoding', 'cache-control', 'pragma', 'expires'].includes(name.toLowerCase())) {
+                    res.setHeader(name, value);
+                }
+            });
+            res.status(response.status);
+            response.body.pipe(res);
 
         } catch (error) {
             console.error(error);
