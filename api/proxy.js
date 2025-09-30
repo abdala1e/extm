@@ -6,8 +6,8 @@ const CORS_HEADERS = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 function generateRandomPublicIp() { const firstOctet = Math.floor(Math.random() * 223) + 1; if ([10, 127, 172, 192].includes(firstOctet)) { return generateRandomPublicIp(); } return `${firstOctet}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`; }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// ذاكرة لتخزين آخر تسلسل لكل بث
-const sequenceMemory = {};
+// ذاكرة لتخزين آخر المقاطع التي تم إرسالها
+const segmentMemory = new Map();
 
 module.exports = async (req, res) => {
     Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
@@ -44,59 +44,50 @@ module.exports = async (req, res) => {
 
             const contentType = response.headers.get('content-type') || '';
 
-            // *** بداية الحل النهائي: "الكاتب المنظِّم" ***
+            // *** بداية الحل الصحيح: "المنظف البسيط" ***
             if (contentType.includes('mpegurl')) {
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
-                const baseUrl = new URL(currentUrl);
-                const origin = `https://${req.headers.host}`;
-
-                // استخراج رقم التسلسل الحالي من القائمة
-                const sequenceMatch = body.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
-                const currentSequence = sequenceMatch ? parseInt(sequenceMatch[1], 10) : 0;
-
-                // استخراج المقاطع الجديدة فقط
+                
                 const lines = body.split('\n');
-                let newPlaylist = [];
-                let newSegments = [];
-                let lastKnownSequence = sequenceMemory[targetUrlString] || (currentSequence - 1);
+                const cleanedLines = [];
+                let recentSegments = segmentMemory.get(targetUrlString) || [];
 
                 for (let i = 0; i < lines.length; i++) {
-                    if (lines[i].startsWith('#EXT-X-MEDIA-SEQUENCE')) {
-                        newPlaylist.push(`#EXT-X-MEDIA-SEQUENCE:${lastKnownSequence + 1}`);
-                    } else if (lines[i].startsWith('#')) {
-                        newPlaylist.push(lines[i]);
-                    } else if (lines[i].trim() !== '') {
-                        // استخراج رقم المقطع من اسم الملف (e.g., _4724.ts)
-                        const segmentMatch = lines[i].match(/_(\d+)\.ts/);
-                        const segmentNumber = segmentMatch ? parseInt(segmentMatch[1], 10) : 0;
-
-                        // إضافة المقطع فقط إذا كان جديدًا
-                        if (segmentNumber > lastKnownSequence) {
-                            newSegments.push({ info: lines[i-1], path: lines[i] });
-                            lastKnownSequence = segmentNumber;
+                    const line = lines[i];
+                    // تحقق مما إذا كان السطر هو اسم ملف مقطع .ts
+                    if (line.trim().endsWith('.ts')) {
+                        // إذا كان المقطع مكررًا (موجود في الذاكرة)، تجاهله هو وسطر المعلومات الذي يسبقه
+                        if (recentSegments.includes(line.trim())) {
+                            continue; 
                         }
+                        // إذا لم يكن مكررًا، أضفه إلى القائمة النظيفة وأضف سطر المعلومات
+                        cleanedLines.push(lines[i-1]);
+                        cleanedLines.push(line);
+                        recentSegments.push(line.trim());
+                    } else {
+                        // أضف أي سطر آخر (مثل #EXTM3U, #EXT-X-VERSION, etc.)
+                        cleanedLines.push(line);
                     }
                 }
+
+                // حافظ على حجم الذاكرة معقولاً (آخر 20 مقطعًا فقط)
+                if (recentSegments.length > 20) {
+                    recentSegments = recentSegments.slice(recentSegments.length - 20);
+                }
+                segmentMemory.set(targetUrlString, recentSegments);
+
+                let finalBody = cleanedLines.join('\n');
                 
-                // إعادة بناء قائمة التشغيل بالمقاطع الجديدة فقط
-                newSegments.forEach(segment => {
-                    newPlaylist.push(segment.info);
-                    newPlaylist.push(segment.path);
-                });
-
-                // تحديث الذاكرة بآخر تسلسل
-                sequenceMemory[targetUrlString] = lastKnownSequence;
-
-                let finalBody = newPlaylist.join('\n');
-
                 // إعادة كتابة الروابط لتمر عبر البروكسي
+                const baseUrl = new URL(currentUrl);
+                const origin = `https://${req.headers.host}`;
                 finalBody = finalBody.replace(/^(https?:\/\/[^\s]+)$/gm, line => `${origin}/proxy/${encodeURIComponent(line)}`);
                 finalBody = finalBody.replace(/^([^\s#].*)$/gm, line => `${origin}/proxy/${encodeURIComponent(new URL(line, baseUrl).toString())}`);
                 
                 return res.status(response.status).send(finalBody);
             }
-            // *** نهاية الحل النهائي ***
+            // *** نهاية الحل الصحيح ***
 
             // العودة إلى طريقة .pipe() التي نجحت بنسبة 75% للمقاطع
             response.headers.forEach((value, name) => {
