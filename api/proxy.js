@@ -6,9 +6,6 @@ const CORS_HEADERS = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-
 function generateRandomPublicIp() { const firstOctet = Math.floor(Math.random() * 223) + 1; if ([10, 127, 172, 192].includes(firstOctet)) { return generateRandomPublicIp(); } return `${firstOctet}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`; }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// ذاكرة لتخزين آخر المقاطع التي تم إرسالها
-const segmentMemory = new Map();
-
 module.exports = async (req, res) => {
     Object.entries(CORS_HEADERS).forEach(([key, value]) => res.setHeader(key, value));
     if (req.method === 'OPTIONS') return res.status(204).end();
@@ -44,41 +41,53 @@ module.exports = async (req, res) => {
 
             const contentType = response.headers.get('content-type') || '';
 
-            // *** بداية الحل الصحيح: "المنظف البسيط" ***
+            // *** بداية الحل النهائي: "مُعالج قائمة التشغيل" ***
             if (contentType.includes('mpegurl')) {
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
                 let body = await response.text();
                 
                 const lines = body.split('\n');
-                const cleanedLines = [];
-                let recentSegments = segmentMemory.get(targetUrlString) || [];
+                const segments = [];
+                let headerLines = [];
+                let mediaSequence = 0;
 
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    // تحقق مما إذا كان السطر هو اسم ملف مقطع .ts
-                    if (line.trim().endsWith('.ts')) {
-                        // إذا كان المقطع مكررًا (موجود في الذاكرة)، تجاهله هو وسطر المعلومات الذي يسبقه
-                        if (recentSegments.includes(line.trim())) {
-                            continue; 
+                // 1. فصل الترويسات عن المقاطع
+                for (const line of lines) {
+                    if (line.startsWith('#EXTINF')) {
+                        const nextLineIndex = lines.indexOf(line) + 1;
+                        if (nextLineIndex < lines.length && lines[nextLineIndex].trim().endsWith('.ts')) {
+                            segments.push({ info: line, path: lines[nextLineIndex] });
                         }
-                        // إذا لم يكن مكررًا، أضفه إلى القائمة النظيفة وأضف سطر المعلومات
-                        cleanedLines.push(lines[i-1]);
-                        cleanedLines.push(line);
-                        recentSegments.push(line.trim());
-                    } else {
-                        // أضف أي سطر آخر (مثل #EXTM3U, #EXT-X-VERSION, etc.)
-                        cleanedLines.push(line);
+                    } else if (line.startsWith('#EXT-X-MEDIA-SEQUENCE')) {
+                        mediaSequence = parseInt(line.split(':')[1], 10) || 0;
+                        headerLines.push(line); // احتفظ بالسطر الأصلي
+                    } else if (line.startsWith('#') && !line.startsWith('#EXT-X-ENDLIST')) {
+                        headerLines.push(line);
                     }
                 }
 
-                // حافظ على حجم الذاكرة معقولاً (آخر 20 مقطعًا فقط)
-                if (recentSegments.length > 20) {
-                    recentSegments = recentSegments.slice(recentSegments.length - 20);
-                }
-                segmentMemory.set(targetUrlString, recentSegments);
+                // 2. إزالة التكرار من المقاطع (الاحتفاظ بالنسخة الأخيرة فقط)
+                const uniqueSegments = Array.from(new Map(segments.map(s => [s.path, s])).values());
 
-                let finalBody = cleanedLines.join('\n');
-                
+                // 3. إعادة بناء قائمة التشغيل بشكل نظيف
+                let newPlaylist = [];
+                // إزالة أي ترويسة MEDIA-SEQUENCE قديمة من الترويسات
+                headerLines = headerLines.filter(l => !l.startsWith('#EXT-X-MEDIA-SEQUENCE'));
+                newPlaylist.push(...headerLines);
+
+                // إضافة ترويسة MEDIA-SEQUENCE جديدة وصحيحة
+                if (uniqueSegments.length > 0) {
+                    newPlaylist.push(`#EXT-X-MEDIA-SEQUENCE:${mediaSequence}`);
+                }
+
+                // إضافة المقاطع النظيفة
+                uniqueSegments.forEach(segment => {
+                    newPlaylist.push(segment.info);
+                    newPlaylist.push(segment.path);
+                });
+
+                let finalBody = newPlaylist.join('\n');
+
                 // إعادة كتابة الروابط لتمر عبر البروكسي
                 const baseUrl = new URL(currentUrl);
                 const origin = `https://${req.headers.host}`;
@@ -87,11 +96,11 @@ module.exports = async (req, res) => {
                 
                 return res.status(response.status).send(finalBody);
             }
-            // *** نهاية الحل الصحيح ***
+            // *** نهاية الحل النهائي ***
 
-            // العودة إلى طريقة .pipe() التي نجحت بنسبة 75% للمقاطع
+            // تمرير مقاطع الفيديو .ts مباشرة كما في الكود الناجح
             response.headers.forEach((value, name) => {
-                if (!['content-encoding', 'transfer-encoding'].includes(name.toLowerCase())) {
+                if (!['content-encoding', 'transfer-encoding', 'cache-control', 'pragma', 'expires'].includes(name.toLowerCase())) {
                     res.setHeader(name, value);
                 }
             });
