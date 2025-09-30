@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/allawi.m3u8",
-      "destination": "/api/proxy?target=http://apk.dream4k.co/live/6gi2up0jbb/dxu4mhmspq/1269947.m3u8"
+      "destination": "/api/proxy?target=http://apk.dream4k.co/live/6gi2up0jbb/dxu4mhmspq/1121793.m3u8"
     },
     {
       "source": "/proxy/:target",
